@@ -1,0 +1,4 @@
+.idea/*
+*.pyc
+/challenge_env
+/challenge_venv
