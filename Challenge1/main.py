@@ -14,7 +14,7 @@ from itertools import permutations
 from os import walk, getcwd
 from time import time
 
-ignore = ['main.py', '__init__.py', 'profiler.py']
+ignore = ['main.py', '__init__.py', 'profiler.py', 'log_output.txt']
 
 all_tests = [[1, 2, 3, 4]]
 # [[1, 2], [1, 2, 21], [1, 2, 12], [1, 2, 3], [1, 2, 3, 4], [1, 2, 3, 4, 5]]
@@ -44,7 +44,7 @@ def main():
     # import all functions
     all_methods = list()
     for file in all_files:
-        if file != "main.py" and file != "__init__.py":
+        if not in ignore:
             print('Got valid file: {}'.format(file))
             try:
                 method = import_from(file[0:-3], file[0:-3])
