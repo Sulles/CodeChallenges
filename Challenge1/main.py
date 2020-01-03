@@ -44,7 +44,7 @@ def main():
     # import all functions
     all_methods = list()
     for file in all_files:
-        if not in ignore:
+        if file not in ignore:
             print('Got valid file: {}'.format(file))
             try:
                 method = import_from(file[0:-3], file[0:-3])
