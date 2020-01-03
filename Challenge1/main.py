@@ -5,9 +5,8 @@
 From a list of integers, find the shortest string which contains all permutations of those numbers.
 For example: [1, 2] has "121" as the shortest string which contains all permutations of 1, 2, and 21.
 
---- Allowable imports ---
+--- Allowable external packages ---
 numpy
-itertools
 """
 
 from itertools import permutations
@@ -44,7 +43,7 @@ def main():
     # import all functions
     all_methods = list()
     for file in all_files:
-        if not in ignore:
+        if file not in ignore:
             print('Got valid file: {}'.format(file))
             try:
                 method = import_from(file[0:-3], file[0:-3])

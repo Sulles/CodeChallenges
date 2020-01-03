@@ -2,3 +2,4 @@
 *.pyc
 /challenge_env
 /challenge_venv
+log_output.txt
