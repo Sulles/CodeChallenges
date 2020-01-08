@@ -2,32 +2,41 @@
 Created on: 20 Dec, 2019
 
 @author: Matthew Kesselring
+
+Proven shortest:
+N       L(N)
+2   ==  3
+3   ==  9
+4   ==  33
+5   ==  153
+6   <=  872
+7   <=  5907
+
 """
+import cProfile
 import logging
 import operator
-import random
-import re
+import pstats
 import string
 import time
+import importlib
+import pickle
+import os
+from threading import Thread
+from queue import Queue, Empty
 from collections import Counter
-from copy import deepcopy
 from functools import reduce
 from itertools import permutations, islice
 from math import factorial
-from multiprocessing.pool import ThreadPool
-from queue import Queue, Empty
-from sys import getsizeof
-from threading import Thread, active_count
+from pstats import SortKey
 
-import numpy as np
+validate_answer = importlib.import_module("main").validate_answer
 
-from Challenge1.main import validate_answer
-
-logger = None
+logger = logging.getLogger(__file__)
 LOG_LEVEL = logging.WARNING
 
 
-def matthew(nums, num_workers=1, ratio=20):
+def matthew(nums, multi=False):
     """
     Matthew's main function. Wrapper for the actual algorithm function.
     :param nums: (list of int) Numbers to form into a superpermutation
@@ -35,141 +44,11 @@ def matthew(nums, num_workers=1, ratio=20):
     """
     # Set up logger
     logging.basicConfig(level=LOG_LEVEL)
-    global logger
-    logger = logging.getLogger(__file__)
 
-    # Initial attempt: Random sampling
-    # best = samples(nums)
-
-    # Better algorithm: Greedy appending
-    best = greedy(nums, num_workers=num_workers, ratio=ratio)
+    # Finds shortest: Depth first
+    best = depth(nums, multi)
 
     # Return
-    return best
-
-
-def greedy(nums, num_workers=1, ratio=20):
-    """
-    Creates multiple threads to try different permutation orders
-    :param nums:
-    :return:
-    """
-    best = ""
-    best_len = float('inf')
-
-    n = len(nums)
-    chars = string.ascii_letters
-    chars += string.digits
-
-    # Too many to map,
-    if n > len(chars):
-        raise IOError(
-            "ERROR: Input contains more than {} items.".format(len(chars)))
-
-    # Map data to letters (a-z, A-Z, 0-9)
-    logger.debug("Mapping items...")
-    mapping = dict()
-    for idx, val in enumerate(nums):
-        mapping[chars[idx]] = val
-    nums = list(mapping.keys())
-
-    # Try out different permutations
-    # Multithreading
-    queue = Queue()
-    workers = []
-    base_thread_count = active_count()
-    num_perms = npermutations(nums)
-    ratio = ratio if (num_perms * n) < 1e3 else max(num_workers, 1)
-    # Populate queue
-    logger.info("Populating Queue")
-    num_samples = min(num_perms, ratio)
-    logger.info("# samples: {}".format(num_samples))
-    for i in random.sample(range(num_perms), num_samples):
-        queue.put(i)
-    logger.info("Queue size: {}".format(queue.qsize()))
-    # Create workers
-    logger.info("Creating workers")
-    try:
-        for i in range(num_workers):
-            worker = GreedyWorker(queue=queue, nums=nums)
-            workers.append(worker)
-            worker.start()
-    finally:
-        # Wait for queue to empty
-        logger.info("Waiting for queue")
-        queue.join()
-        # Wait for threads to finish
-        logger.info("Waiting for workers")
-        while True:
-            if all([w.stopped for w in workers]):
-                break
-        results = [r.result for r in workers]
-        results = list(filter(lambda x: x != "", results))
-
-    # Re-convert to given data
-    logger.debug("Re-converting")
-    for idx, val in enumerate(results):
-        r = ""
-        for char in val:
-            r += str(mapping[char])
-        results[idx] = r
-
-    # Get best result
-    for r in results:
-        r_len = len(r)
-        # Compare current result to best
-        if (best_len == float('inf')) or (r_len < best_len):
-            best = r
-            best_len = r_len
-            logger.info("New best length: {}".format(best_len))
-            logger.info("New best permutation: {}".format(best))
-
-    # Return
-    return best
-
-
-def greedy_worker(nums):
-    """
-    Maps each element of the source data to a unique character and calls the
-    construction function to generate the superpermutation
-    :param nums: (list of int) Numbers to form into a superpermutation
-    :return: (string) Short superpermutation
-    """
-    n = len(nums)
-    chars = string.ascii_letters
-    chars += string.digits
-
-    # Too many to map,
-    if n > len(chars):
-        raise IOError(
-            "ERROR: Input contains more than {} items.".format(len(chars)))
-
-    # Map data to letters (a-z, A-Z, 0-9)
-    logger.debug("Mapping items...")
-    mapping = dict()
-    for idx, val in enumerate(nums):
-        mapping[chars[idx]] = val
-    nums = mapping.keys()
-
-    # Loop, adding chars until an unseen permutation is formed in the last "n"
-    # chars
-    logger.debug("Generating permutations...")
-    # allperms = (''.join(p) for p in permutations(nums))
-    allperms = []
-    for p in permutations(nums):
-        allperms.append(''.join(p))
-        print("\rallperms: {:.0f} KB".format(getsizeof(allperms) / 1024),
-              end='', flush=True)
-
-    # Try out different permutations
-    random.shuffle(allperms)
-    sp = greedy_construct(allperms)
-
-    # Re-convert to given data
-    logger.debug("Re-converting")
-    best = ""
-    for char in sp:
-        best += str(mapping[char])
     return best
 
 
@@ -189,7 +68,8 @@ def greedy_construct(allperms, start=None):
     tofind = set(allperms)  # Remaining permutations
     # print("tofind", tofind)
     # print("sp:", sp)
-    tofind.remove(sp)
+    if sp in tofind:
+        tofind.remove(sp)
     n_tofind = len(tofind)
     logger.debug("looping...")
     while tofind:
@@ -197,6 +77,7 @@ def greedy_construct(allperms, start=None):
             # for all substrings of length "skip" in sp from "n" before
             # end to "skip" after that
             # EX: "abcdefg"[-4:][:3] would give "def"
+            trial_add = None
             for trial_add in (''.join(p) for p in
                               permutations(sp[-n:][:skip])):
                 # logger.debug("")
@@ -239,78 +120,6 @@ def greedy_construct(allperms, start=None):
     return sp
 
 
-def samples(nums, ratio=int(1e5)):
-    """
-    Generates all possible superpermutations and then collapses a random sample
-    :param nums: (list of int) Numbers to form into a superpermutation
-    :param ratio: (int) Optional number of random samples
-    :return: (string) Short superpermutation
-    """
-    # Get list of all permutations
-    p_list = get_permutations(nums)
-
-    # Random sampling
-    logger.info("Calculating number of samples")
-    num_combos = npermutations(p_list)
-    n_sample = ratio if (ratio < num_combos) else num_combos
-
-    # Set up loop
-    logger.info("Setting up loop")
-    best = ""
-    best_len = float("inf")
-    chunk = []
-    n = 0
-    p = ThreadPool()
-    logger.info("Looping")
-    for m in range(1, int(n_sample + 1)):
-        if n_sample == num_combos:
-            all_combos = permutations(p_list)
-            for count in range(num_combos):
-                current = get_random_permutation(all_combos, random=False)
-                chunk.append(current)
-                n += 1
-        else:
-            current = get_random_permutation(p_list)
-            chunk.append(current)
-            n += 1
-
-        if (len(chunk) >= 100) or (n == n_sample) or (n_sample == num_combos):
-            # Collapse in threads
-            async_result = p.map_async(iterate_thread, chunk)
-            result = async_result.get()
-            chunk = []
-
-            percent = (n / n_sample) * 100
-            print("\r{:.04f}%: {} of {}".format(percent, n, n_sample),
-                  end="",
-                  flush=True)
-
-            # Get shortest
-            tmp = min(result, key=len)
-            if len(tmp) < best_len:
-                best = tmp
-                best_len = len(tmp)
-                print()
-                logger.debug("new best: {}".format(best))
-                logger.debug("new length: {}".format(len(best)))
-
-        if n_sample == num_combos:
-            break
-
-    # Clean up pool
-    p.close()
-    p.join()
-
-    return best
-
-
-def get_random_permutation(vals, random=True):
-    if random:
-        yield np.random.permutation(vals)
-    else:
-        yield next(vals)
-
-
 def npermutations(vals):
     num = factorial(len(vals))
     mults = Counter(vals).values()
@@ -318,91 +127,182 @@ def npermutations(vals):
     return num // den
 
 
-def iterate_thread(current):
-    current = list(next(current))
-    # Join into super-permutation
-    super_p = ",".join(list(current))
-    super_p = ",{},".format(super_p)
+def depth(nums, multi=False):
+    n = len(nums)
+    chars = string.ascii_letters
+    chars += string.digits
 
-    # Collapse
-    collapsed = collapse(super_p, current)
+    # Too many to map,
+    if n > len(chars):
+        raise IOError(
+            "ERROR: Input contains more than {} items.".format(len(chars)))
 
-    return collapsed
+    # Map data to letters (a-z, A-Z, 0-9)
+    logger.debug("Mapping items...")
+    mapping = dict()
+    for idx, val in enumerate(nums):
+        mapping[chars[idx]] = val
+    nums = list(mapping.keys())
+
+    # Run depth-first search
+    perms = map(''.join, permutations(nums))
+    root = list(islice(perms, 1))[0]
+    tofind = set(perms)
+    allperms = map(''.join, permutations(nums))
+    start = list(islice(allperms, 0, 1))
+    best = greedy_construct(allperms, start[0])
+    logger.info(" Starting Best: {}".format(len(best)))
+    r = depth_first(root, n, tofind, best, top=multi)
+    r = r if r is not None else best
+
+    # Re-convert
+    best = ""
+    for char in r:
+        best += str(mapping[char])
+
+    # Return
+    return best
 
 
-def get_permutations(nums):
-    # Convert to strings
-    for idx, n in enumerate(nums):
-        nums[idx] = str(n)
+def depth_first(root, n, tofind, best, top=False):
+    # If tofind is empty
+    if not tofind:
+        return root
+    # If longer than the current best (assuming all unfound patterns can be
+    # included with just one additional character each, which is the best case)
+    elif (len(root) + len(tofind)) >= len(best):
+        return None
 
-    # Get permutations
-    p_list = list(permutations(nums))
+    # Generate potential branches based on the current root
+    potential = try_add(root, n, tofind, best)
 
-    # Convert each permutation from tuple to string
-    for idx, p in enumerate(p_list):
-        p_list[idx] = ",".join(list(p))
-    return p_list
+    # Potential branches collected, explore each one
+    new = best
+    # print("DEPTH_FIRST", [p.root for p in potential])
+    # print()
+    if top and (len(potential) > 1):
+        top = False
+        # print("Multi", potential)
+        for p in potential:
+            p.n = n
+            p.best = best
+
+        args = [pickle.dumps(p) for p in potential]
+
+        r_queue = Queue()
+        workers = []
+        results = []
+        # Create workers
+        # print(len(args))
+        for idx, val in enumerate(args):
+            worker = Thread(target=thread_wrapper, args=(val, r_queue))
+            workers.append(worker)
+            # worker.run()
+            # worker.start()
+            if ((idx % os.cpu_count()) == 0) or (idx == (len(args)-1)):
+                for w in workers:
+                    w.start()
+                for w in workers:
+                    if w.is_alive():
+                        w.join()
+                workers = []
+        # Wait for workers to finish
+        # for w in workers:
+        #     w.join()
+        #     assert not w.is_alive()
+        # Get results
+        while not r_queue.empty():
+            results.append(r_queue.get())
+            r_queue.task_done()
+        r_queue.join()
+
+        # Find shortest
+        for r in results:
+            if r is None:
+                continue
+            # Else, compare result to current best
+            else:
+                logger.info(" # Branches:  {}".format(len(potential)))
+                if len(r) < len(new):
+                    new = r
+                    logger.info(" New Best:    {}\n".format(len(new)))
+    else:
+        for p in potential:
+            r = depth_first(p.root, n, p.tofind, new, top=top)
+            # If None, branch is discarded as not being a better solution
+            if r is None:
+                continue
+            # Else, compare result to current best
+            else:
+                # print(" # Branches:  {}".format(len(potential)))
+                # print(" Seed Level:  {}".format(len(p.root) - n))
+                logger.info(" # Branches:  {}".format(len(potential)))
+                logger.info(" Seed Level:  {}".format(len(p.root) - n))
+                if len(r) < len(new):
+                    new = r
+                    logger.info(" New Best:    {}\n".format(len(new)))
+                    # print(" New Best:    {}\n".format(len(new)))
+
+    # If a better solution was found, return it
+    return new if len(new) < len(best) else None
 
 
-def collapse(super_p, p_list):
-    # Remove neighboring duplicates
-    logger.debug("Before: {}".format(super_p))
-    collapsed = re.sub(r'(,)([0-9]+),(?=\1)', r'', super_p)
-    logger.debug("After:    {}".format(collapsed))
-    # Remove commas used for delimiting
-    collapsed = collapsed.replace(",", "")
-    return collapsed
+def try_add(root, n, tofind, best):
+    potential = []
+    for skip in range(1, n):
+        # for all substrings of length "skip" in sp from "n" before
+        # end to "skip" after that
+        # EX: "abcdefg"[-4:][:3] would give "def"
+        for trial_add in (''.join(p) for p in
+                          permutations(root[-n:][:skip])):
+
+            # Append characters to end of "sp" and check if the last <n>
+            # characters of the trial perm are a new permutation
+            trial_perm = (root + trial_add)[-n:]
+            # print(root, trial_add, trial_perm)
+            if trial_perm in tofind:
+                # Last "n" chars of "trial_perm" form a missing
+                # permutation, so we want to add it
+                tmp = root + trial_add
+                if (len(tmp) + len(tofind) - 1) < len(best):
+                    # Remove found permutation from "tofind"
+                    tmp_find = type(tofind)(tofind)
+                    tmp_find.discard(trial_perm)
+                    newperm = Permutation(tmp, tmp_find)
+                    potential.append(newperm)
+
+        # Added some branches, don't look for longer additions
+        if len(potential) > 0:
+            break
+    return potential
 
 
-class GreedyWorker(Thread):
-    def __init__(self, queue, nums):
-        Thread.__init__(self)
-        self.queue = queue
-        self.result = None
-        self.nums = deepcopy(nums)
-        self.stopped = True
+def depth_wrapper(perm):
+    p = pickle.loads(perm)
+    return depth_first(p.root, p.n, p.tofind, p.best)
 
-    def run(self):
-        nums = self.nums
-        best = ""
-        best_len = None
-        self.stopped = False
-        while True:
-            allperms = map(''.join, permutations(nums))
-            try:
-                idx = self.queue.get(block=False)
-                self.queue.task_done()
-                # if LOG_LEVEL <= logging.INFO:
-                #     print("\rQueue Size: {}".format(self.queue.qsize()),
-                #           end='',
-                #           flush=True)
-                try:
-                    tmp = deepcopy(allperms)
-                    start = list(islice(tmp, idx, idx + 1))
-                    logger.debug("idx: {}, start: {}".format(idx, start))
-                    current = greedy_construct(allperms, start[0])
-                    if (best_len is None) or (len(current) < best_len):
-                        best = current
-                        best_len = len(current)
-                        logger.info(
-                            "THREAD: New best length: {}".format(best_len))
-                        # logger.info("THREAD: New best permutation: {
-                        # }".format(best))
-                except Exception as e:
-                    raise e
-                # finally:
-                #     self.queue.task_done()
-            except Empty:
-                self.result = best
-                break
-        self.stopped = True
+
+def thread_wrapper(perm, result):
+    p = pickle.loads(perm)
+    r = depth_first(p.root, p.n, p.tofind, p.best)
+    result.put(r)
+    return
+
+
+class Permutation(object):
+    def __init__(self, root, tofind, n=None, best=None):
+        super().__init__()
+        self.root = root
+        self.tofind = tofind
+        self.n = n
+        self.best = best
 
 
 if __name__ == "__main__":
     # LOG_LEVEL = logging.INFO
-    n_ratio = 20
-    n_workers = 1
-    N = 9
+    PROFILE = bool(1)
+    MULTI = bool(1)
+    N = 5
 
     # Test data
     # all_tests = [[1, 2], [1, 2, 21], [1, 2, 12], [1, 2, 3], [1, 2, 3, 4],
@@ -415,29 +315,34 @@ if __name__ == "__main__":
         print()
         print("Data: {}".format(data))
 
-        # prof = cProfile.Profile()
-        # prof.runcall(matthew, data, ratio=n_ratio, num_workers=n_workers)
-        # prof.dump_stats("matthew_profile")
-        # p = pstats.Stats("matthew_profile")
-        # p.sort_stats(SortKey.CUMULATIVE)
-        # p.print_stats()
-        # print()
-        # p.print_callers()
+        if PROFILE:
+            # prof = cProfile.Profile()
+            # prof.runcall(matthew, data)
+            # prof.dump_stats("matthew_profile")
+            # p = pstats.Stats("matthew_profile")
+            # p.sort_stats(SortKey.CUMULATIVE)
+            # p.print_stats()
+            # # print()
+            # # p.print_callers()
 
-        # Run function
-        start_time = time.perf_counter()
-        sptime = time.process_time()
-        super_permutation = matthew(data, ratio=n_ratio,
-                                    num_workers=n_workers)
-        end_time = time.perf_counter()
-        eptime = time.process_time()
+            for m in [True, False]:
+                times = []
+                for i in range(10):
+                    start_time = time.perf_counter()
+                    sp = matthew(data, m)
+                    end_time = time.perf_counter()
+                    times.append(end_time-start_time)
+                print("Multiprocessing: {:5s}, Average: {}".format(str(m), sum(times)/len(times)))
+        else:
+            # Run function
+            start_time = time.perf_counter()
+            super_permutation = matthew(data, MULTI)
+            end_time = time.perf_counter()
 
-        # Verify
-        print("\rVerifying")
-        validate_answer(data, super_permutation)
+            # Verify
+            print("\rVerifying")
+            validate_answer(data, super_permutation)
 
-        print("n_workers: {}".format(n_workers))
-        print("time:  {:f} seconds".format(end_time - start_time))
-        print("ptime: {:f} seconds".format(eptime - sptime))
-        print("length:", len(super_permutation))
-        # print("super permutation:", super_permutation)
+            print("time:  {:f} seconds".format(end_time - start_time))
+            print("length:", len(super_permutation))
+            # print("super permutation:", super_permutation)
