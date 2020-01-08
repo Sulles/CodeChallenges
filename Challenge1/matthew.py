@@ -21,9 +21,7 @@ import string
 import time
 import importlib
 import pickle
-import os
-from threading import Thread
-from queue import Queue, Empty
+from multiprocessing.pool import Pool
 from collections import Counter
 from functools import reduce
 from itertools import permutations, islice
@@ -32,7 +30,7 @@ from pstats import SortKey
 
 validate_answer = importlib.import_module("main").validate_answer
 
-logger = logging.getLogger(__file__)
+# logger = logging.getLogger(__file__)
 LOG_LEVEL = logging.WARNING
 
 
@@ -43,7 +41,7 @@ def matthew(nums, multi=False):
     :return: (string) Short superpermutation
     """
     # Set up logger
-    logging.basicConfig(level=LOG_LEVEL)
+    # logging.basicConfig(level=LOG_LEVEL)
 
     # Finds shortest: Depth first
     best = depth(nums, multi)
@@ -71,7 +69,7 @@ def greedy_construct(allperms, start=None):
     if sp in tofind:
         tofind.remove(sp)
     n_tofind = len(tofind)
-    logger.debug("looping...")
+    # logger.debug("looping...")
     while tofind:
         for skip in range(1, n):
             # for all substrings of length "skip" in sp from "n" before
@@ -138,7 +136,7 @@ def depth(nums, multi=False):
             "ERROR: Input contains more than {} items.".format(len(chars)))
 
     # Map data to letters (a-z, A-Z, 0-9)
-    logger.debug("Mapping items...")
+    # logger.debug("Mapping items...")
     mapping = dict()
     for idx, val in enumerate(nums):
         mapping[chars[idx]] = val
@@ -151,7 +149,7 @@ def depth(nums, multi=False):
     allperms = map(''.join, permutations(nums))
     start = list(islice(allperms, 0, 1))
     best = greedy_construct(allperms, start[0])
-    logger.info(" Starting Best: {}".format(len(best)))
+    # logger.info(" Starting Best: {}".format(len(best)))
     r = depth_first(root, n, tofind, best, top=multi)
     r = r if r is not None else best
 
@@ -178,10 +176,9 @@ def depth_first(root, n, tofind, best, top=False):
 
     # Potential branches collected, explore each one
     new = best
-    # print("DEPTH_FIRST", [p.root for p in potential])
-    # print()
+    # If more than one branch and has not previously done so,
+    # do multiprocessing
     if top and (len(potential) > 1):
-        top = False
         # print("Multi", potential)
         for p in potential:
             p.n = n
@@ -189,32 +186,12 @@ def depth_first(root, n, tofind, best, top=False):
 
         args = [pickle.dumps(p) for p in potential]
 
-        r_queue = Queue()
-        workers = []
-        results = []
-        # Create workers
-        # print(len(args))
-        for idx, val in enumerate(args):
-            worker = Thread(target=thread_wrapper, args=(val, r_queue))
-            workers.append(worker)
-            # worker.run()
-            # worker.start()
-            if ((idx % os.cpu_count()) == 0) or (idx == (len(args)-1)):
-                for w in workers:
-                    w.start()
-                for w in workers:
-                    if w.is_alive():
-                        w.join()
-                workers = []
-        # Wait for workers to finish
-        # for w in workers:
-        #     w.join()
-        #     assert not w.is_alive()
-        # Get results
-        while not r_queue.empty():
-            results.append(r_queue.get())
-            r_queue.task_done()
-        r_queue.join()
+        # Start processes and get results
+        pool = Pool()
+        async_result = pool.map_async(depth_wrapper, args)
+        pool.close()
+        pool.join()
+        results = async_result.get()
 
         # Find shortest
         for r in results:
@@ -222,10 +199,10 @@ def depth_first(root, n, tofind, best, top=False):
                 continue
             # Else, compare result to current best
             else:
-                logger.info(" # Branches:  {}".format(len(potential)))
+                # logger.info(" # Branches:  {}".format(len(potential)))
                 if len(r) < len(new):
                     new = r
-                    logger.info(" New Best:    {}\n".format(len(new)))
+                    # logger.info(" New Best:    {}\n".format(len(new)))
     else:
         for p in potential:
             r = depth_first(p.root, n, p.tofind, new, top=top)
@@ -236,11 +213,11 @@ def depth_first(root, n, tofind, best, top=False):
             else:
                 # print(" # Branches:  {}".format(len(potential)))
                 # print(" Seed Level:  {}".format(len(p.root) - n))
-                logger.info(" # Branches:  {}".format(len(potential)))
-                logger.info(" Seed Level:  {}".format(len(p.root) - n))
+                # logger.info(" # Branches:  {}".format(len(potential)))
+                # logger.info(" Seed Level:  {}".format(len(p.root) - n))
                 if len(r) < len(new):
                     new = r
-                    logger.info(" New Best:    {}\n".format(len(new)))
+                    # logger.info(" New Best:    {}\n".format(len(new)))
                     # print(" New Best:    {}\n".format(len(new)))
 
     # If a better solution was found, return it
@@ -282,13 +259,6 @@ def depth_wrapper(perm):
     return depth_first(p.root, p.n, p.tofind, p.best)
 
 
-def thread_wrapper(perm, result):
-    p = pickle.loads(perm)
-    r = depth_first(p.root, p.n, p.tofind, p.best)
-    result.put(r)
-    return
-
-
 class Permutation(object):
     def __init__(self, root, tofind, n=None, best=None):
         super().__init__()
@@ -308,8 +278,8 @@ if __name__ == "__main__":
     # all_tests = [[1, 2], [1, 2, 21], [1, 2, 12], [1, 2, 3], [1, 2, 3, 4],
     #              [1, 2, 3, 4, 5], [1, 2, 3, 4, 5, 6],
     #              [0, 1, 2, 3, 10, 11, 12, 13]]
-    all_tests = [[j for j in range(1, i + 1)] for i in range(2, N + 1)]
-    # all_tests = [[i for i in range(1, N + 1)]]
+    # all_tests = [[j for j in range(1, i + 1)] for i in range(2, N + 1)]
+    all_tests = [[i for i in range(1, N + 1)]]
 
     for data in all_tests:
         print()
@@ -327,7 +297,7 @@ if __name__ == "__main__":
 
             for m in [True, False]:
                 times = []
-                for i in range(10):
+                for i in range(5):
                     start_time = time.perf_counter()
                     sp = matthew(data, m)
                     end_time = time.perf_counter()
