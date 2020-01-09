@@ -21,9 +21,12 @@ import string
 import time
 import importlib
 import pickle
+import os
+from multiprocessing import Lock, Manager
+from multiprocessing.managers import SyncManager
 from multiprocessing.pool import Pool
 from collections import Counter
-from functools import reduce
+from functools import reduce, partial
 from itertools import permutations, islice
 from math import factorial
 from pstats import SortKey
@@ -34,7 +37,7 @@ validate_answer = importlib.import_module("main").validate_answer
 LOG_LEVEL = logging.WARNING
 
 
-def matthew(nums, multi=False):
+def matthew(nums, multi=True):
     """
     Matthew's main function. Wrapper for the actual algorithm function.
     :param nums: (list of int) Numbers to form into a superpermutation
@@ -162,7 +165,15 @@ def depth(nums, multi=False):
     return best
 
 
-def depth_first(root, n, tofind, best, top=False):
+def depth_first(root, n, tofind, best, top=False, master=None, lock=None):
+    # if master is not None:
+    #     # print(master, lock)
+    #     with lock:
+    #         if len(master.get()) < len(master.get()):
+    #             best = master.get()
+    #         # lock.release()
+    #         # print("released")
+
     # If tofind is empty
     if not tofind:
         return root
@@ -187,11 +198,17 @@ def depth_first(root, n, tofind, best, top=False):
         args = [pickle.dumps(p) for p in potential]
 
         # Start processes and get results
-        pool = Pool()
-        async_result = pool.map_async(depth_wrapper, args)
-        pool.close()
-        pool.join()
-        results = async_result.get()
+        # lock = Lock()
+        # master = Master(lock, best)
+        with Manager() as manager:
+            master = manager.Value(str, best)
+            lock = manager.RLock()
+            func = partial(depth_wrapper, master=master, lock=lock)
+            pool = Pool(processes=min(len(args), os.cpu_count()))
+            async_result = pool.map_async(func, args)
+            pool.close()
+            pool.join()
+            results = async_result.get()
 
         # Find shortest
         for r in results:
@@ -205,18 +222,29 @@ def depth_first(root, n, tofind, best, top=False):
                     # logger.info(" New Best:    {}\n".format(len(new)))
     else:
         for p in potential:
-            r = depth_first(p.root, n, p.tofind, new, top=top)
+            r = depth_first(p.root, n, p.tofind, new, top=top, master=master, lock=lock)
             # If None, branch is discarded as not being a better solution
             if r is None:
                 continue
             # Else, compare result to current best
             else:
                 # print(" # Branches:  {}".format(len(potential)))
+                # print(" master: {}".format(master))
                 # print(" Seed Level:  {}".format(len(p.root) - n))
                 # logger.info(" # Branches:  {}".format(len(potential)))
                 # logger.info(" Seed Level:  {}".format(len(p.root) - n))
+
                 if len(r) < len(new):
                     new = r
+                    if master is not None:
+                        # print(master, lock)
+                        with lock:
+                            if len(new) < len(master.get()):
+                                master.set(new)
+                            else:
+                                new = master.get()
+                            # lock.release()
+                            # print("released")
                     # logger.info(" New Best:    {}\n".format(len(new)))
                     # print(" New Best:    {}\n".format(len(new)))
 
@@ -254,9 +282,9 @@ def try_add(root, n, tofind, best):
     return potential
 
 
-def depth_wrapper(perm):
+def depth_wrapper(perm, master=None, lock=None):
     p = pickle.loads(perm)
-    return depth_first(p.root, p.n, p.tofind, p.best)
+    return depth_first(p.root, p.n, p.tofind, p.best, master=master, lock=lock)
 
 
 class Permutation(object):
@@ -270,9 +298,9 @@ class Permutation(object):
 
 if __name__ == "__main__":
     # LOG_LEVEL = logging.INFO
-    PROFILE = bool(1)
+    PROFILE = bool(0)
     MULTI = bool(1)
-    N = 5
+    N = 6
 
     # Test data
     # all_tests = [[1, 2], [1, 2, 21], [1, 2, 12], [1, 2, 3], [1, 2, 3, 4],
