@@ -14,7 +14,6 @@ N       L(N)
 
 """
 import importlib
-import operator
 import os
 import pickle
 import string
@@ -22,8 +21,7 @@ import time
 import cProfile
 import pstats
 from pstats import SortKey
-from collections import Counter
-from functools import reduce, partial
+from functools import partial
 from itertools import permutations, islice
 from math import factorial
 from multiprocessing import Manager, TimeoutError
@@ -32,9 +30,10 @@ from multiprocessing.pool import Pool
 # Function to validate the answer from Challenge1/main.py
 validate_answer = importlib.import_module("main").validate_answer
 
-# Timeout in seconds (60 * minutes)
+# Timeout in seconds (seconds)
 TIMEOUT = 60 * 60
-START_TIME = time.time()
+START_TIME = int()
+tree = dict()
 
 
 def matthew(nums, multi=True):
@@ -97,10 +96,7 @@ def greedy_construct(allperms, start=None):
 
 
 def npermutations(vals):
-    num = factorial(len(vals))
-    mults = Counter(vals).values()
-    den = reduce(operator.mul, (factorial(v) for v in mults), 1)
-    return num // den
+    return factorial(len(vals))
 
 
 def depth(nums, multi=False):
@@ -116,19 +112,28 @@ def depth(nums, multi=False):
             "ERROR: Input contains more than {} items.".format(len(chars)))
 
     # Map data to letters (a-z, A-Z, 0-9)
-    # logger.debug("Mapping items...")
     mapping = dict()
     for idx, val in enumerate(nums):
         mapping[chars[idx]] = val
     nums = list(mapping.keys())
 
     # Run depth-first search
-    perms = map(''.join, permutations(nums))
-    root = list(islice(perms, 1))[0]
+    perms = list(map(''.join, permutations(nums)))
+    root = perms.pop(0)
     tofind = set(perms)
+
+    global tree, START_TIME
+    START_TIME = time.time()
+    for i in range(1, len(nums) + 1):
+        for c in permutations(nums, i):
+            base = ''.join(list(c))
+            remaining = ''.join([v for v in nums if v not in base])
+            tree[base] = PermutationTree(base, remaining)
+
     allperms = map(''.join, permutations(nums))
     start = list(islice(allperms, 0, 1))
     best = greedy_construct(allperms, start[0])
+
     r = depth_first(root, n, tofind, best, top=multi)
     r = r if r is not None else best
 
@@ -184,7 +189,7 @@ def depth_first(root, n, tofind, best, top=False, master=None, lock=None):
             # Bind master and lock to function
             func = partial(depth_wrapper, master=master, lock=lock)
             # Create pool of workers
-            pool = Pool(processes=min(len(args), os.cpu_count()))
+            pool = Pool(processes=min(len(args), os.cpu_count()), initializer=pool_init, initargs=(tree,))
             # Map potentials to bound functions run by pool
             async_result = pool.map_async(func, args)
 
@@ -231,36 +236,73 @@ def depth_first(root, n, tofind, best, top=False, master=None, lock=None):
                     # print("New Best:    {}\n".format(len(new)))
 
     # If a better solution was found, return it
-    # if master is not None:
-    #     new = min(master.value, new, key=len)
     return new if len(new) < len(best) else None
+
+
+def iterative_depth(base, master, lock):
+    queue = [base]
+    best = base.best
+    evaluated = 0
+    interval = 250
+    while True:
+        try:
+            perm = queue.pop()
+            root = perm.root
+            tofind = perm.tofind
+            n = perm.n
+        except IndexError:
+            break
+        else:
+            evaluated += 1
+            if (evaluated % interval) == 0:
+                best = min(best, master.value, key=len)
+            # if (evaluated % (500*interval))==0:
+            #     print("Eval: {}, Queue: {}".format(evaluated, len(queue)))
+            # If tofind is empty
+            if not tofind:
+                with lock:
+                    if len(root) < len(master.value):
+                        master.value = root
+                    else:
+                        root = master.value
+                best = root
+                # print("Current Best: {}\n".format(len(best)))
+                continue
+            # If longer than the current best (assuming all unfound patterns can be
+            # included with just one additional character each, which is the
+            # best case)
+            elif (len(root) + len(tofind)) >= len(best):
+                # print("Too long, discarding. Queue Size:", len(queue))
+                continue
+
+            if time.time() > (START_TIME + TIMEOUT):
+                break
+
+            # Generate potential branches based on the current root
+            potential = try_add(root, n, tofind, best)
+            p_len = len(potential)
+            if p_len == 0:
+                continue
+            else:
+                for i in range(1, p_len+1):
+                    p = potential[-i]
+                    queue.append(p)
+    return best
 
 
 def try_add(root, n, tofind, best):
     potential = []
-    best_len = len(best)
-    len_tofind = len(tofind)
     for skip in range(1, n):
-        # for all substrings of length "skip" in sp from "n" before
-        # end to "skip" after that
-        # EX: "abcdefg"[-4:][:3] would give "def"
-        tmp_perm = permutations(root[-n:-(n - skip)])
-        for tmp_add in tmp_perm:
-            trial_add = ''.join(tmp_add)
-            # Append characters to end of "sp" and check if the last <n>
-            # characters of the trial perm are a new permutation
-            trial_perm = (root + trial_add)[-n:]
-            # print(root, trial_add, trial_perm)
-            if trial_perm in tofind:
-                # Last "n" chars of "trial_perm" form a missing
-                # permutation, so we want to add it
-                tmp = root + trial_add
-                if (len(tmp) + len_tofind - 1) < best_len:
-                    # Remove found permutation from "tofind"
-                    tmp_find = type(tofind)(tofind)
-                    tmp_find.discard(trial_perm)
-                    newperm = Permutation(tmp, tmp_find, add=trial_add)
-                    potential.append(newperm)
+        trial_root = root[-(n-skip):]
+        branch = tree[trial_root]
+        perms_list = [i for i in branch.get_permutations() if i in tofind]
+        for trial_perm in perms_list:
+            trial_add = trial_perm.replace(trial_root, "")
+            tmp = root + trial_add
+            tmp_find = type(tofind)(tofind)
+            tmp_find.discard(trial_perm)
+            newperm = Permutation(root=tmp, n=n, tofind=tmp_find, add=trial_add)
+            potential.append(newperm)
 
         # Added some branches, don't look for longer additions
         if len(potential) > 0:
@@ -271,20 +313,52 @@ def try_add(root, n, tofind, best):
 def depth_wrapper(perm, master=None, lock=None):
     p = pickle.loads(perm)
     # cProfile.runctx(
-    #     'depth_first(p.root, p.n, p.tofind, p.best, master=master, lock=lock)',
+    #     'iterative_depth(p, master=master, lock=lock)',
     #     globals(), locals(),
     #     os.path.join(os.getcwd(), "prof{}.prof".format(p.trial_add)))
-    depth_first(p.root, p.n, p.tofind, p.best, master=master, lock=lock)
+    # depth_first(p.root, p.n, p.tofind, p.best, master=master, lock=lock)
+    iterative_depth(p, master=master, lock=lock)
+
+
+def pool_init(t):
+    global tree, START_TIME
+    tree = t
+    START_TIME = time.time()
 
 
 class Permutation(object):
-    def __init__(self, root, tofind, n=None, best=None, add=None):
+    def __init__(self, root, tofind, n, best=None, add=None):
         super().__init__()
         self.root = root
         self.tofind = tofind
         self.n = n
         self.best = best
         self.trial_add = add
+
+
+class PermutationTree:
+    def __init__(self, base, remaining):
+        self.base = base
+        self.remaining = remaining
+        self.leaves = None
+        self.permutations = None
+        self.calculate_children()
+
+    def calculate_children(self):
+        self.leaves = [''.join(p) for p in permutations(self.remaining)]
+        self.permutations = self.calculate_permutations()
+
+    def calculate_permutations(self):
+        if (self.leaves is None) or (len(self.leaves) == 0):
+            return [self.base]
+        else:
+            return [''.join([self.base, l]) for l in self.leaves]
+
+    def get_permutations(self):
+        return self.permutations
+
+    def __str__(self):
+        return "{} {}".format(self.base, self.leaves)
 
 
 if __name__ == "__main__":
@@ -294,8 +368,8 @@ if __name__ == "__main__":
     # all_tests = [[1, 2], [1, 2, 21], [1, 2, 12], [1, 2, 3], [1, 2, 3, 4],
     #              [1, 2, 3, 4, 5], [1, 2, 3, 4, 5, 6],
     #              [0, 1, 2, 3, 10, 11, 12, 13]]
-    # all_tests = [[j for j in range(1, i + 1)] for i in range(2, N + 1)]
-    all_tests = [[i for i in range(1, N + 1)]]
+    all_tests = [[j for j in range(1, i + 1)] for i in range(2, N + 1)]
+    # all_tests = [[i for i in range(1, N + 1)]]
 
     for subdir, dirs, files in os.walk(os.getcwd()):
         for file in files:
@@ -313,6 +387,7 @@ if __name__ == "__main__":
         end_time = time.time()
 
         # Verify
+        # print(super_permutation)
         print("\rVerifying")
         validate_answer(data, super_permutation)
 
