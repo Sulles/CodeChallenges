@@ -30,9 +30,10 @@ from multiprocessing.pool import Pool
 # Function to validate the answer from Challenge1/main.py
 validate_answer = importlib.import_module("main").validate_answer
 
-# Timeout in seconds (seconds)
-TIMEOUT = 60 * 60
-START_TIME = int()
+# Timeout in seconds
+TIMEOUT = 60 * 0.5
+
+START_TIME = float()
 tree = dict()
 
 
@@ -178,6 +179,12 @@ def depth_first(root, n, tofind, best, top=False, master=None, lock=None):
             p.n = n
             p.best = best
 
+        num_processes = os.cpu_count() - 1
+        while len(potential) < num_processes:
+            p1 = potential.pop(0)
+            potential.extend(try_add(p1.root, p1.n, p1.tofind, p1.best))
+        #     print("Potential: {}".format(len(potential)))
+        # print("continuing, potential: {}".format(len(potential)))
         args = [pickle.dumps(p) for p in potential]
 
         # Manager object to sync current best between processes
@@ -189,7 +196,8 @@ def depth_first(root, n, tofind, best, top=False, master=None, lock=None):
             # Bind master and lock to function
             func = partial(depth_wrapper, master=master, lock=lock)
             # Create pool of workers
-            pool = Pool(processes=min(len(args), os.cpu_count()), initializer=pool_init, initargs=(tree,))
+            pool = Pool(processes=min(len(args), num_processes),
+                        initializer=pool_init, initargs=(tree,))
             # Map potentials to bound functions run by pool
             async_result = pool.map_async(func, args)
 
@@ -225,41 +233,44 @@ def depth_first(root, n, tofind, best, top=False, master=None, lock=None):
                 # Update current best from master
                 if master is not None:
                     new = min(master.value, new, key=len)
-                # print("# Branches:  {}".format(len(potential)))
-                # print("Seed Level:   {}".format(
-                #     npermutations(list(range(n))) - len(tofind)))
-                # print("Current Best: {}".format(len(new)))
 
                 # If current result is shorter than current best
                 if len(r) < len(new):
                     new = r
-                    # print("New Best:    {}\n".format(len(new)))
 
     # If a better solution was found, return it
     return new if len(new) < len(best) else None
 
 
 def iterative_depth(base, master, lock):
-    queue = [base]
+    stack = [base]
     best = base.best
     evaluated = 0
     interval = 250
-    while True:
+    # print("Starting Best: {}".format(len(best)))
+
+    # Loop until break or timeout is reached
+    while time.time() < (START_TIME + TIMEOUT):
         try:
-            perm = queue.pop()
+            # Get item from top of stack and unpack
+            perm = stack.pop()
             root = perm.root
             tofind = perm.tofind
             n = perm.n
         except IndexError:
+            # Stack is empty
             break
         else:
+            # Every 250 nodes, update cached best value
             evaluated += 1
             if (evaluated % interval) == 0:
                 best = min(best, master.value, key=len)
-            # if (evaluated % (500*interval))==0:
-            #     print("Eval: {}, Queue: {}".format(evaluated, len(queue)))
-            # If tofind is empty
+                # if (evaluated % (1000*interval)) == 0:
+                #     print("Eval: {}, Stack: {}".format(evaluated, len(stack)))
+
+            # If tofind is empty, all permutations have been found
             if not tofind:
+                # Compare length with current best and master
                 with lock:
                     if len(root) < len(master.value):
                         master.value = root
@@ -268,34 +279,40 @@ def iterative_depth(base, master, lock):
                 best = root
                 # print("Current Best: {}\n".format(len(best)))
                 continue
-            # If longer than the current best (assuming all unfound patterns can be
-            # included with just one additional character each, which is the
-            # best case)
+            # If longer than the current best (assuming all unfound patterns
+            # can be included with just one additional character each,
+            # which is the best case)
             elif (len(root) + len(tofind)) >= len(best):
-                # print("Too long, discarding. Queue Size:", len(queue))
+                # Result from this node is too long, discard
                 continue
 
-            if time.time() > (START_TIME + TIMEOUT):
-                break
-
-            # Generate potential branches based on the current root
+            # Generate potential branches based on the current root and add
+            # them to the stack
             potential = try_add(root, n, tofind, best)
             p_len = len(potential)
             if p_len == 0:
+                # No child nodes found, continue to next on stack
                 continue
             else:
+                # Children found, add to stack such that potential[0] is on
+                # the top
                 for i in range(1, p_len+1):
                     p = potential[-i]
-                    queue.append(p)
+                    stack.append(p)
+
     return best
 
 
 def try_add(root, n, tofind, best):
     potential = []
+    # best_len = len(best)
+    # base_len = len(root) + len(tofind) - 1
     for skip in range(1, n):
         trial_root = root[-(n-skip):]
         branch = tree[trial_root]
         perms_list = [i for i in branch.get_permutations() if i in tofind]
+        # if (skip + base_len) >= best_len:
+        #     continue
         for trial_perm in perms_list:
             trial_add = trial_perm.replace(trial_root, "")
             tmp = root + trial_add
@@ -316,7 +333,6 @@ def depth_wrapper(perm, master=None, lock=None):
     #     'iterative_depth(p, master=master, lock=lock)',
     #     globals(), locals(),
     #     os.path.join(os.getcwd(), "prof{}.prof".format(p.trial_add)))
-    # depth_first(p.root, p.n, p.tofind, p.best, master=master, lock=lock)
     iterative_depth(p, master=master, lock=lock)
 
 
@@ -368,8 +384,8 @@ if __name__ == "__main__":
     # all_tests = [[1, 2], [1, 2, 21], [1, 2, 12], [1, 2, 3], [1, 2, 3, 4],
     #              [1, 2, 3, 4, 5], [1, 2, 3, 4, 5, 6],
     #              [0, 1, 2, 3, 10, 11, 12, 13]]
-    all_tests = [[j for j in range(1, i + 1)] for i in range(2, N + 1)]
-    # all_tests = [[i for i in range(1, N + 1)]]
+    # all_tests = [[j for j in range(1, i + 1)] for i in range(2, N + 1)]
+    all_tests = [[i for i in range(1, N + 1)]]
 
     for subdir, dirs, files in os.walk(os.getcwd()):
         for file in files:
