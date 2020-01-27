@@ -9,8 +9,9 @@ N       L(N)
 3   ==  9
 4   ==  33
 5   ==  153
-6   <=  872
+6   <=  873
 7   <=  5907
+8   <=  48785
 
 """
 import importlib
@@ -26,6 +27,7 @@ from itertools import permutations, islice
 from math import factorial
 from multiprocessing import Manager, TimeoutError
 from multiprocessing.pool import Pool
+from collections import deque
 
 # Function to validate the answer from Challenge1/main.py
 validate_answer = importlib.import_module("main").validate_answer
@@ -35,6 +37,9 @@ TIMEOUT = 60 * 0.5
 
 START_TIME = float()
 tree = dict()
+
+# shortest_known = dict()
+shortest_known = {2: 3, 3: 9, 4: 33, 5: 153, 6: 873, 7: 5913}
 
 
 def matthew(nums, multi=True):
@@ -243,14 +248,15 @@ def depth_first(root, n, tofind, best, top=False, master=None, lock=None):
 
 
 def iterative_depth(base, master, lock):
-    stack = [base]
+    stack = deque([base])
     best = base.best
     evaluated = 0
     interval = 250
-    # print("Starting Best: {}".format(len(best)))
+    cached_shortest_known = shortest_known.get(base.n, 0)
 
     # Loop until break or timeout is reached
-    while time.time() < (START_TIME + TIMEOUT):
+    END_TIME = START_TIME + TIMEOUT
+    while time.time() < END_TIME:
         try:
             # Get item from top of stack and unpack
             perm = stack.pop()
@@ -265,11 +271,13 @@ def iterative_depth(base, master, lock):
             evaluated += 1
             if (evaluated % interval) == 0:
                 best = min(best, master.value, key=len)
+                if len(best) <= cached_shortest_known:
+                    break
                 # if (evaluated % (1000*interval)) == 0:
                 #     print("Eval: {}, Stack: {}".format(evaluated, len(stack)))
 
             # If tofind is empty, all permutations have been found
-            if not tofind:
+            if len(tofind) == 0:
                 # Compare length with current best and master
                 with lock:
                     if len(root) < len(master.value):
@@ -285,18 +293,12 @@ def iterative_depth(base, master, lock):
             elif (len(root) + len(tofind)) >= len(best):
                 # Result from this node is too long, discard
                 continue
-
-            # Generate potential branches based on the current root and add
-            # them to the stack
-            potential = try_add(root, n, tofind, best)
-            p_len = len(potential)
-            if p_len == 0:
-                # No child nodes found, continue to next on stack
-                continue
             else:
-                # Children found, add to stack such that potential[0] is on
-                # the top
-                for i in range(1, p_len+1):
+                # Generate potential branches based on the current root and add
+                # them to the stack
+                potential = try_add(root, n, tofind, best)
+                upper_lim = len(potential) + 1
+                for i in range(1, upper_lim):
                     p = potential[-i]
                     stack.append(p)
 
@@ -305,18 +307,18 @@ def iterative_depth(base, master, lock):
 
 def try_add(root, n, tofind, best):
     potential = []
-    # best_len = len(best)
-    # base_len = len(root) + len(tofind) - 1
+    best_len = len(best)
+    base_len = len(root) + len(tofind) - 1
     for skip in range(1, n):
+        if (skip + base_len) >= best_len:
+            break
         trial_root = root[-(n-skip):]
         branch = tree[trial_root]
         perms_list = [i for i in branch.get_permutations() if i in tofind]
-        # if (skip + base_len) >= best_len:
-        #     continue
         for trial_perm in perms_list:
             trial_add = trial_perm.replace(trial_root, "")
             tmp = root + trial_add
-            tmp_find = type(tofind)(tofind)
+            tmp_find = set(tofind)
             tmp_find.discard(trial_perm)
             newperm = Permutation(root=tmp, n=n, tofind=tmp_find, add=trial_add)
             potential.append(newperm)
@@ -378,7 +380,7 @@ class PermutationTree:
 
 
 if __name__ == "__main__":
-    N = 5
+    N = 6
 
     # Test data
     # all_tests = [[1, 2], [1, 2, 21], [1, 2, 12], [1, 2, 3], [1, 2, 3, 4],
