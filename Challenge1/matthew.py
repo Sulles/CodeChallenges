@@ -187,7 +187,8 @@ def depth_first(root, n, tofind, best, top=False, master=None, lock=None):
         num_processes = os.cpu_count() - 1
         while len(potential) < num_processes:
             p1 = potential.pop(0)
-            potential.extend(try_add(p1.root, p1.n, p1.tofind, p1.best))
+            tmp = try_add(p1.root, p1.n, p1.tofind, best)
+            potential.extend(tmp)
         #     print("Potential: {}".format(len(potential)))
         # print("continuing, potential: {}".format(len(potential)))
         args = [pickle.dumps(p) for p in potential]
@@ -251,7 +252,9 @@ def iterative_depth(base, master, lock):
     stack = deque([base])
     best = base.best
     evaluated = 0
+    count = 0
     interval = 250
+    big_interval = 1000 * interval
     cached_shortest_known = shortest_known.get(base.n, 0)
 
     # Loop until break or timeout is reached
@@ -273,8 +276,10 @@ def iterative_depth(base, master, lock):
                 best = min(best, master.value, key=len)
                 if len(best) <= cached_shortest_known:
                     break
-                # if (evaluated % (1000*interval)) == 0:
-                #     print("Eval: {}, Stack: {}".format(evaluated, len(stack)))
+                evaluated %= big_interval
+                # count += 1
+                # if evaluated == 0:
+                #     print("Interval: {}, Stack: {}".format(count, len(stack)))
 
             # If tofind is empty, all permutations have been found
             if len(tofind) == 0:
@@ -309,8 +314,9 @@ def try_add(root, n, tofind, best):
     potential = []
     best_len = len(best)
     base_len = len(root) + len(tofind) - 1
+    comp_len = best_len - base_len
     for skip in range(1, n):
-        if (skip + base_len) >= best_len:
+        if skip >= comp_len:
             break
         trial_root = root[-(n-skip):]
         branch = tree[trial_root]
@@ -320,7 +326,7 @@ def try_add(root, n, tofind, best):
             tmp = root + trial_add
             tmp_find = set(tofind)
             tmp_find.discard(trial_perm)
-            newperm = Permutation(root=tmp, n=n, tofind=tmp_find, add=trial_add)
+            newperm = Permutation(root=tmp, n=n, tofind=tmp_find, add=trial_add, best=best)
             potential.append(newperm)
 
         # Added some branches, don't look for longer additions
