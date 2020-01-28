@@ -16,7 +16,6 @@ N       L(N)
 """
 import importlib
 import os
-import pickle
 import string
 import time
 import cProfile
@@ -38,8 +37,15 @@ TIMEOUT = 60 * 0.5
 START_TIME = float()
 tree = dict()
 
-# shortest_known = dict()
-shortest_known = {2: 3, 3: 9, 4: 33, 5: 153, 6: 873, 7: 5913}
+shortest_known = {
+    # 2: 3,
+    # 3: 9,
+    # 4: 33,
+    # 5: 153,
+    6: 873,
+    7: 5913,
+    8: 48785,
+}
 
 
 def matthew(nums, multi=True):
@@ -110,12 +116,12 @@ def depth(nums, multi=False):
     chars = string.ascii_letters
     chars += string.digits
 
-    multi = (n > 4) and multi
+    multi = (n > 5) and multi
 
     # Too many to map,
     if n > len(chars):
         raise IOError(
-            "ERROR: Input contains more than {} items.".format(len(chars)))
+            f"ERROR: Input contains more than {len(chars)} items.")
 
     # Map data to letters (a-z, A-Z, 0-9)
     mapping = dict()
@@ -152,47 +158,37 @@ def depth(nums, multi=False):
     return best
 
 
-def depth_first(root, n, tofind, best, top=False, master=None, lock=None):
-    # If tofind is empty
-    if not tofind:
-        if master is not None:
-            with lock:
-                if len(root) < len(master.value):
-                    master.value = root
-                else:
-                    root = master.value
-        return root
-    # If longer than the current best (assuming all unfound patterns can be
-    # included with just one additional character each, which is the best case)
-    elif (len(root) + len(tofind)) >= len(best):
-        return None
-
-    if time.time() > (START_TIME + TIMEOUT):
-        return None
+def depth_first(root, n, tofind, best, top=False):
+    # Calculate number of processes
+    if top:
+        # num_processes = os.cpu_count() - 1
+        num_processes = os.cpu_count() - 2
+        # num_processes = 3 * os.cpu_count() // 4
+        # num_processes = os.cpu_count() // 2
+    else:
+        num_processes = 1
+    num_processes = max(num_processes, 1)
 
     # Generate potential branches based on the current root
     potential = try_add(root, n, tofind, best)
     if len(potential) == 0:
         return None
+    while len(potential) < num_processes:
+        p1 = potential.pop(0)
+        tmp = try_add(p1.root, p1.n, p1.tofind, best)
+        potential.extend(tmp)
+    for p in potential:
+        p.n = n
+        p.best = best
+    args = potential
 
-    # Potential branches collected, explore each one
-    new = best
-    # If more than one branch and has not previously done so,
-    # do multiprocessing
-    if top and (len(potential) > 1):
-        for p in potential:
-            p.n = n
-            p.best = best
-
-        num_processes = os.cpu_count() - 1
-        while len(potential) < num_processes:
-            p1 = potential.pop(0)
-            tmp = try_add(p1.root, p1.n, p1.tofind, best)
-            potential.extend(tmp)
-        #     print("Potential: {}".format(len(potential)))
-        # print("continuing, potential: {}".format(len(potential)))
-        args = [pickle.dumps(p) for p in potential]
-
+    # Spawn processes if needed
+    if num_processes == 1:
+        solutions = []
+        for a in args:
+            solutions.append(iterative_depth(a, master=None, lock=None))
+        new = min(solutions, key=len)
+    else:
         # Manager object to sync current best between processes
         with Manager() as manager:
             # Value to store the current best
@@ -208,41 +204,12 @@ def depth_first(root, n, tofind, best, top=False, master=None, lock=None):
             async_result = pool.map_async(func, args)
 
             # Get async results, if timeout occurs, gets current shortest
-            try:
-                pool.close()  # No more tasks will be added to the pool
-                # async_result.get(timeout=TIMEOUT)
-                async_result.get()
-            except TimeoutError:
-                # Lock access to master and immediately terminate workers
-                with lock:
-                    pool.terminate()
-                    # results = [master.value]
+            pool.close()  # No more tasks will be added to the pool
+            async_result.get()
             # Clean up pool
             pool.join()
 
             new = master.value
-
-        # Find shortest
-        # new = min(results, key=len)
-
-    else:
-        # Don't spawn more processes, iterate over potential
-        for p in potential:
-            # Recursion
-            r = depth_first(p.root, n, p.tofind, new, top=top, master=master, lock=lock)
-
-            # If None, branch is discarded as not being a better solution
-            if r is None:
-                continue
-            # Else, compare result to current best
-            else:
-                # Update current best from master
-                if master is not None:
-                    new = min(master.value, new, key=len)
-
-                # If current result is shorter than current best
-                if len(r) < len(new):
-                    new = r
 
     # If a better solution was found, return it
     return new if len(new) < len(best) else None
@@ -253,7 +220,7 @@ def iterative_depth(base, master, lock):
     best = base.best
     evaluated = 0
     count = 0
-    interval = 250
+    interval = 500
     big_interval = 1000 * interval
     cached_shortest_known = shortest_known.get(base.n, 0)
 
@@ -273,24 +240,29 @@ def iterative_depth(base, master, lock):
             # Every 250 nodes, update cached best value
             evaluated += 1
             if (evaluated % interval) == 0:
-                best = min(best, master.value, key=len)
+                if master is not None:
+                    best = min(best, master.value, key=len)
                 if len(best) <= cached_shortest_known:
+                    # An acceptably short solution has been found
                     break
                 evaluated %= big_interval
                 # count += 1
                 # if evaluated == 0:
-                #     print("Interval: {}, Stack: {}".format(count, len(stack)))
+                #     print(f"Interval: {count}, Stack: {len(stack)}")
 
             # If tofind is empty, all permutations have been found
             if len(tofind) == 0:
                 # Compare length with current best and master
-                with lock:
-                    if len(root) < len(master.value):
-                        master.value = root
-                    else:
-                        root = master.value
-                best = root
-                # print("Current Best: {}\n".format(len(best)))
+                if master is not None:
+                    with lock:
+                        if len(root) < len(master.value):
+                            master.value = root
+                        else:
+                            root = master.value
+                    best = root
+                else:
+                    best = min(best, root, key=len)
+                # print(f"Current Best: {len(best)}\n")
                 continue
             # If longer than the current best (assuming all unfound patterns
             # can be included with just one additional character each,
@@ -323,7 +295,7 @@ def try_add(root, n, tofind, best):
         perms_list = [i for i in branch.get_permutations() if i in tofind]
         for trial_perm in perms_list:
             trial_add = trial_perm.replace(trial_root, "")
-            tmp = root + trial_add
+            tmp = f"{root}{trial_add}"
             tmp_find = set(tofind)
             tmp_find.discard(trial_perm)
             newperm = Permutation(root=tmp, n=n, tofind=tmp_find, add=trial_add, best=best)
@@ -336,12 +308,11 @@ def try_add(root, n, tofind, best):
 
 
 def depth_wrapper(perm, master=None, lock=None):
-    p = pickle.loads(perm)
     # cProfile.runctx(
     #     'iterative_depth(p, master=master, lock=lock)',
     #     globals(), locals(),
     #     os.path.join(os.getcwd(), "prof{}.prof".format(p.trial_add)))
-    iterative_depth(p, master=master, lock=lock)
+    iterative_depth(perm, master=master, lock=lock)
 
 
 def pool_init(t):
@@ -382,7 +353,7 @@ class PermutationTree:
         return self.permutations
 
     def __str__(self):
-        return "{} {}".format(self.base, self.leaves)
+        return f"{self.base} {self.leaves}"
 
 
 if __name__ == "__main__":
@@ -403,7 +374,7 @@ if __name__ == "__main__":
 
     for data in all_tests:
         print()
-        print("Data: {}".format(data))
+        print(f"Data: {data}")
 
         # Run function
         start_time = time.time()
@@ -415,8 +386,8 @@ if __name__ == "__main__":
         print("\rVerifying")
         validate_answer(data, super_permutation)
 
-        print("time:  {:f} seconds".format(end_time - start_time))
-        print("length:", len(super_permutation))
+        print(f"time:  {(end_time-start_time):f} seconds")
+        print(f"length: {len(super_permutation)}")
 
         for subdir, dirs, files in os.walk(os.getcwd()):
             for file in files:
